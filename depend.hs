@@ -62,36 +62,65 @@ typeof c (EVar id) = fromJust (c id)
 typeof c TInt = TType 
 typeof c TType = TType
 
-lexeme :: MonadParsec s m Char => m a -> m a
-lexeme = L.lexeme (L.space (void spaceChar) 
-                           (L.skipLineComment "--")
-                           (L.skipBlockComment "{-" "-}"))
- 
-name :: MonadParsec s m Char => m String
-name = lexeme (some letterChar)
+type Parser = Parsec String
 
-var :: MonadParsec s m Char => m (Exp String)
-var = EVar <$> name
+spaceConsumer :: Parser ()
+spaceConsumer = (L.space (void spaceChar) 
+                         (L.skipLineComment "--")
+                         (L.skipBlockComment "{-" "-}"))
 
-lambda :: MonadParsec s m Char => m (Exp String)
-lambda = do lexeme (string "\\")
-            var <- name
-            lexeme (string ":")
-            typ <- expr
-            lexeme (string ".")
-            body <- expr
-            return (ELam var typ body)
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme spaceConsumer
 
-plus :: MonadParsec s m Char => m (Exp String)
-plus = do l <- expr
-          lexeme (string "+")
-          r <- expr
-          return (EAdd l r)
+symbol = L.symbol spaceConsumer
 
-expr :: MonadParsec s m Char => m (Exp String)
-expr = try var <|>
-       lambda
+var :: Parser String
+var = lexeme ((:) <$> letterChar <*> many alphaNumChar)
+
+expr = lamExpr
+
+lamExpr :: Parser (Exp String)
+lamExpr = try (do symbol "\\"
+                  arg <- var
+                  symbol ":"
+                  argt <- expr
+                  symbol "."
+                  body <- expr
+                  return (ELam arg argt body))
+          <|> letExpr
+
+letExpr = try (do symbol "let"
+                  bind <- var
+                  symbol "="
+                  arg <- expr
+                  symbol "in"
+                  body <- expr
+                  return (ELet bind arg body))
+          <|> allExpr
+
+allExpr = try (do symbol "forall"
+                  arg <- var
+                  symbol ":"
+                  typ <- expr
+                  symbol "."
+                  body <- expr
+                  return (TAll arg typ body))
+          <|> addExpr
+
+addExpr = try (do l <- appExpr
+                  symbol "+"
+                  r <- addExpr
+                  return (EAdd l r))
+          <|> appExpr
+
+appExpr = foldl1 EApp <$> some primExpr
+
+primExpr = try ((EInt . either id (error "Bad number")) <$> lexeme L.number)
+       <|> try (TInt <$ symbol "int")
+       <|> try (EVar <$> var)
+       <|> between (symbol "(") (symbol ")") expr
 
 main = do prog <- getContents
           Right res <- pure $ parse (expr <* eof) "<stdin>" prog
           print res
+          return ()
